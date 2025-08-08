@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "hi_text": "Shri Ram Bolo",
+    "first_tokens": ["shri", "ram"],
+    "en_audio": "audio/1.wav"
+  },
+  {
+    "id": 2,
+    "hi_text": "Hanuman Ji Aayenge",
+    "first_tokens": ["hanuman", "ji"],
+    "en_audio": "audio/2.wav"
+  }
+]
