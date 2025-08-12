@@ -1,4 +1,4 @@
-#!/home/ashok/Documents/GitHub/tts_test/venv/bin/python3
+#!/home/ashok/Desktop/tts_test/venv/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys

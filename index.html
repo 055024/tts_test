@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS Remote Controller</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 20px;
+        }
+
+        .panel {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #e9ecef;
+        }
+
+        .panel h2 {
+            color: #495057;
+            margin-bottom: 15px;
+            font-size: 1.3rem;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 5px;
+        }
+
+        .config-form {
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
+        }
+
+        .button-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .button-grid.single {
+            grid-template-columns: 1fr;
+        }
+
+        .btn {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #007bff, #0056b3);
+            color: white;
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #28a745, #1e7e34);
+            color: white;
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #dc3545, #c82333);
+            color: white;
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #ffc107, #e0a800);
+            color: #212529;
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #6c757d, #545b62);
+            color: white;
+        }
+
+        .manual-control {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .manual-control input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            margin-bottom: 10px;
+            background: white;
+            border-radius: 6px;
+            border-left: 4px solid #007bff;
+        }
+
+        .status-label {
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .status-value {
+            font-family: 'Courier New', monospace;
+            color: #007bff;
+            font-weight: bold;
+        }
+
+        .indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-left: 8px;
+        }
+
+        .indicator.active {
+            background: #28a745;
+            box-shadow: 0 0 8px rgba(40,167,69,0.6);
+        }
+
+        .indicator.inactive {
+            background: #dc3545;
+        }
+
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #dc3545;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 1000;
+            transform: translateX(400px);
+            transition: transform 0.3s ease;
+        }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+
+        .connection-status {
+            text-align: center;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
+
+        .connection-status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .connection-status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .audio-controls {
+            border-top: 1px solid #dee2e6;
+            padding-top: 20px;
+            margin-top: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .button-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎤 TTS Remote Controller</h1>
+            <p>Control your trigger-to-playback system remotely</p>
+        </div>
+
+        <div class="main-content">
+            <!-- Controls Panel -->
+            <div class="panel">
+                <h2>🎛️ Controls</h2>
+                
+                <!-- Configuration -->
+                <div class="config-form">
+                    <div class="form-group">
+                        <label for="baseUrl">Backend URL:</label>
+                        <input type="text" id="baseUrl" placeholder="http://localhost:8001" value="http://localhost:8001">
+                    </div>
+                    <div class="form-group">
+                        <label for="apiToken">API Token (optional):</label>
+                        <input type="password" id="apiToken" placeholder="Enter token if required">
+                    </div>
+                    <div class="form-group">
+                        <label for="chunkLength">Chunk Length (ms):</label>
+                        <input type="number" id="chunkLength" value="500" min="100" max="2000">
+                    </div>
+                </div>
+
+                <!-- Connection Status -->
+                <div id="connectionStatus" class="connection-status disconnected">
+                    Disconnected
+                </div>
+
+                <!-- Main Controls -->
+                <div class="button-grid">
+                    <button id="connectBtn" class="btn btn-primary">Connect</button>
+                    <button id="startMicBtn" class="btn btn-success" disabled>Start Mic</button>
+                    <button id="stopMicBtn" class="btn btn-danger" disabled>Stop Mic</button>
+                    <button id="nextBtn" class="btn btn-secondary" disabled>Next</button>
+                    <button id="prevBtn" class="btn btn-secondary" disabled>Previous</button>
+                    <button id="replayBtn" class="btn btn-warning" disabled>Replay</button>
+                    <button id="pauseBtn" class="btn btn-secondary" disabled>Pause Listen</button>
+                    <button id="resumeBtn" class="btn btn-secondary" disabled>Resume Listen</button>
+                </div>
+
+                <!-- Manual Override -->
+                <div class="manual-control">
+                    <input type="number" id="manualCueId" placeholder="Cue ID" disabled>
+                    <button id="manualPlayBtn" class="btn btn-primary" disabled>Play</button>
+                </div>
+
+                <!-- Audio Controls Info -->
+                <div class="audio-controls">
+                    <div class="status-item">
+                        <span class="status-label">Microphone:</span>
+                        <span class="status-value" id="micStatus">Inactive <span class="indicator inactive"></span></span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Recording:</span>
+                        <span class="status-value" id="recordingStatus">Stopped <span class="indicator inactive"></span></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status Panel -->
+            <div class="panel">
+                <h2>📊 Status</h2>
+                
+                <div class="status-item">
+                    <span class="status-label">Current Cue Index:</span>
+                    <span class="status-value" id="currentCueIndex">-</span>
+                </div>
+                
+                <div class="status-item">
+                    <span class="status-label">Last Match ID:</span>
+                    <span class="status-value" id="lastMatchId">-</span>
+                </div>
+                
+                <div class="status-item">
+                    <span class="status-label">Match Score:</span>
+                    <span class="status-value" id="matchScore">-</span>
+                </div>
+                
+                <div class="status-item">
+                    <span class="status-label">Spoken Text:</span>
+                    <span class="status-value" id="spokenText">-</span>
+                </div>
+                
+                <div class="status-item">
+                    <span class="status-label">Listening:</span>
+                    <span class="status-value" id="listeningStatus">- <span class="indicator inactive"></span></span>
+                </div>
+                
+                <div class="status-item">
+                    <span class="status-label">Playing:</span>
+                    <span class="status-value" id="playingStatus">- <span class="indicator inactive"></span></span>
+                </div>
+                
+                <div class="status-item">
+                    <span class="status-label">Uptime:</span>
+                    <span class="status-value" id="uptime">-</span>
+                </div>
+                
+                <div class="status-item">
+                    <span class="status-label">Total Cues:</span>
+                    <span class="status-value" id="totalCues">-</span>
+                </div>
+                
+                <div class="status-item">
+                    <span class="status-label">Latency:</span>
+                    <span class="status-value" id="latency">- ms</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let baseUrl = '';
+        let apiToken = '';
+        let chunkMs = 500;
+        let isConnected = false;
+        let isMicActive = false;
+        let isRecording = false;
+        let mediaRecorder = null;
+        let audioStream = null;
+        let statusInterval = null;
+        let lastStatusTime = 0;
+
+        // DOM elements
+        const elements = {
+            baseUrl: document.getElementById('baseUrl'),
+            apiToken: document.getElementById('apiToken'),
+            chunkLength: document.getElementById('chunkLength'),
+            connectionStatus: document.getElementById('connectionStatus'),
+            connectBtn: document.getElementById('connectBtn'),
+            startMicBtn: document.getElementById('startMicBtn'),
+            stopMicBtn: document.getElementById('stopMicBtn'),
+            nextBtn: document.getElementById('nextBtn'),
+            prevBtn: document.getElementById('prevBtn'),
+            replayBtn: document.getElementById('replayBtn'),
+            pauseBtn: document.getElementById('pauseBtn'),
+            resumeBtn: document.getElementById('resumeBtn'),
+            manualCueId: document.getElementById('manualCueId'),
+            manualPlayBtn: document.getElementById('manualPlayBtn'),
+            micStatus: document.getElementById('micStatus'),
+            recordingStatus: document.getElementById('recordingStatus'),
+            currentCueIndex: document.getElementById('currentCueIndex'),
+            lastMatchId: document.getElementById('lastMatchId'),
+            matchScore: document.getElementById('matchScore'),
+            spokenText: document.getElementById('spokenText'),
+            listeningStatus: document.getElementById('listeningStatus'),
+            playingStatus: document.getElementById('playingStatus'),
+            uptime: document.getElementById('uptime'),
+            totalCues: document.getElementById('totalCues'),
+            latency: document.getElementById('latency')
+        };
+
+        // Load settings from localStorage
+        function loadSettings() {
+            elements.baseUrl.value = localStorage.getItem('tts_baseUrl') || 'http://localhost:8001';
+            elements.apiToken.value = localStorage.getItem('tts_apiToken') || '';
+            elements.chunkLength.value = localStorage.getItem('tts_chunkLength') || '500';
+        }
+
+        // Save settings to localStorage
+        function saveSettings() {
+            localStorage.setItem('tts_baseUrl', elements.baseUrl.value);
+            localStorage.setItem('tts_apiToken', elements.apiToken.value);
+            localStorage.setItem('tts_chunkLength', elements.chunkLength.value);
+        }
+
+        // Show toast notification
+        function showToast(message, type = 'error') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => toast.classList.add('show'), 100);
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => document.body.removeChild(toast), 300);
+            }, 3000);
+        }
+
+        // API helper function
+        async function apiRequest(path, options = {}) {
+            const url = baseUrl + path;
+            const headers = { ...options.headers };
+            
+            if (apiToken) {
+                headers['Authorization'] = 'Bearer ' + apiToken;
+            }
+            
+            const startTime = Date.now();
+            
+            try {
+                const response = await fetch(url, { ...options, headers });
+                const latency = Date.now() - startTime;
+                elements.latency.textContent = latency + ' ms';
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
+                
+                return response.json().catch(() => ({}));
+            } catch (error) {
+                elements.latency.textContent = 'Error';
+                throw error;
+            }
+        }
+
+        // API POST helper
+        async function apiPost(path, body) {
+            return apiRequest(path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+        }
+
+        // Update connection status
+        function updateConnectionStatus(connected) {
+            isConnected = connected;
+            elements.connectionStatus.textContent = connected ? 'Connected' : 'Disconnected';
+            elements.connectionStatus.className = `connection-status ${connected ? 'connected' : 'disconnected'}`;
+            
+            // Enable/disable controls
+            const controlButtons = [
+                elements.startMicBtn, elements.stopMicBtn, elements.nextBtn,
+                elements.prevBtn, elements.replayBtn, elements.pauseBtn,
+                elements.resumeBtn, elements.manualCueId, elements.manualPlayBtn
+            ];
+            
+            controlButtons.forEach(btn => btn.disabled = !connected);
+            elements.connectBtn.textContent = connected ? 'Disconnect' : 'Connect';
+        }
+
+        // Update microphone status
+        function updateMicStatus(active, recording) {
+            isMicActive = active;
+            isRecording = recording;
+            
+            elements.micStatus.innerHTML = `${active ? 'Active' : 'Inactive'} <span class="indicator ${active ? 'active' : 'inactive'}"></span>`;
+            elements.recordingStatus.innerHTML = `${recording ? 'Recording' : 'Stopped'} <span class="indicator ${recording ? 'active' : 'inactive'}"></span>`;
+            
+            elements.startMicBtn.disabled = !isConnected || active;
+            elements.stopMicBtn.disabled = !isConnected || !active;
+        }
+
+        // Connect/disconnect
+        async function toggleConnection() {
+            if (isConnected) {
+                // Disconnect
+                if (statusInterval) {
+                    clearInterval(statusInterval);
+                    statusInterval = null;
+                }
+                await stopMicrophone();
+                updateConnectionStatus(false);
+                return;
+            }
+
+            // Connect
+            baseUrl = elements.baseUrl.value.trim();
+            apiToken = elements.apiToken.value.trim();
+            chunkMs = parseInt(elements.chunkLength.value) || 500;
+            
+            if (!baseUrl) {
+                showToast('Please enter a backend URL');
+                return;
+            }
+            
+            try {
+                await apiRequest('/api/status');
+                updateConnectionStatus(true);
+                saveSettings();
+                startStatusPolling();
+                showToast('Connected successfully!', 'success');
+            } catch (error) {
+                showToast(`Connection failed: ${error.message}`);
+            }
+        }
+
+        // Start microphone
+        async function startMicrophone() {
+            try {
+                audioStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+                
+                // Try WebM/Opus first
+                let mimeType = 'audio/webm;codecs=opus';
+                if (!MediaRecorder.isTypeSupported(mimeType)) {
+                    mimeType = 'audio/webm';
+                    if (!MediaRecorder.isTypeSupported(mimeType)) {
+                        mimeType = 'audio/wav';
+                    }
+                }
+                
+                mediaRecorder = new MediaRecorder(audioStream, { mimeType });
+                
+                mediaRecorder.ondataavailable = async (event) => {
+                    if (!event.data || event.data.size === 0) return;
+                    
+                    try {
+                        const timestamp = Date.now();
+                        const headers = {};
+                        if (apiToken) headers['Authorization'] = 'Bearer ' + apiToken;
+                        
+                        await fetch(baseUrl + '/api/ingest?ts=' + timestamp, {
+                            method: 'POST',
+                            headers: {
+                                ...headers,
+                                'Content-Type': mimeType
+                            },
+                            body: event.data
+                        });
+                    } catch (error) {
+                        console.error('Audio upload error:', error);
+                        showToast('Audio upload failed: ' + error.message);
+                    }
+                };
+                
+                mediaRecorder.onerror = (event) => {
+                    console.error('MediaRecorder error:', event.error);
+                    showToast('Recording error: ' + event.error);
+                };
+                
+                mediaRecorder.start(chunkMs);
+                updateMicStatus(true, true);
+                showToast('Microphone started', 'success');
+                
+            } catch (error) {
+                console.error('Microphone error:', error);
+                showToast('Microphone access failed: ' + error.message);
+            }
+        }
+
+        // Stop microphone
+        async function stopMicrophone() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+            
+            mediaRecorder = null;
+            updateMicStatus(false, false);
+            showToast('Microphone stopped', 'success');
+        }
+
+        // Execute command
+        async function executeCommand(cmd) {
+            try {
+                await apiPost('/api/cmd', { cmd });
+                showToast(`Command '${cmd}' executed`, 'success');
+            } catch (error) {
+                showToast(`Command failed: ${error.message}`);
+            }
+        }
+
+        // Manual play
+        async function manualPlay() {
+            const cueId = parseInt(elements.manualCueId.value);
+            if (!cueId) {
+                showToast('Please enter a valid cue ID');
+                return;
+            }
+            
+            try {
+                await apiPost('/api/manual', { cue_id: cueId });
+                showToast(`Playing cue ${cueId}`, 'success');
+                elements.manualCueId.value = '';
+            } catch (error) {
+                showToast(`Manual play failed: ${error.message}`);
+            }
+        }
+
+        // Refresh status
+        async function refreshStatus() {
+            if (!isConnected) return;
+            
+            try {
+                lastStatusTime = Date.now();
+                const status = await apiRequest('/api/status');
+                
+                elements.currentCueIndex.textContent = status.current_cue_index;
+                elements.lastMatchId.textContent = status.last_match.id || '-';
+                elements.matchScore.textContent = status.last_match.score ? status.last_match.score.toFixed(1) : '-';
+                elements.spokenText.textContent = status.last_match.spoken_text || '-';
+                
+                const listeningActive = status.is_listening;
+                const playingActive = status.is_playing;
+                
+                elements.listeningStatus.innerHTML = `${listeningActive ? 'Active' : 'Inactive'} <span class="indicator ${listeningActive ? 'active' : 'inactive'}"></span>`;
+                elements.playingStatus.innerHTML = `${playingActive ? 'Playing' : 'Idle'} <span class="indicator ${playingActive ? 'active' : 'inactive'}"></span>`;
+                
+                elements.uptime.textContent = formatUptime(status.uptime_s);
+                elements.totalCues.textContent = status.total_cues || '-';
+                
+            } catch (error) {
+                console.error('Status refresh error:', error);
+                // Don't show toast for every status error to avoid spam
+                if (Date.now() - lastStatusTime > 5000) {
+                    showToast('Status refresh failed');
+                }
+            }
+        }
+
+        // Format uptime
+        function formatUptime(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        // Start status polling
+        function startStatusPolling() {
+            if (statusInterval) clearInterval(statusInterval);
+            statusInterval = setInterval(refreshStatus, 750);
+            refreshStatus(); // Initial refresh
+        }
+
+        // Event listeners
+        elements.connectBtn.addEventListener('click', toggleConnection);
+        elements.startMicBtn.addEventListener('click', startMicrophone);
+        elements.stopMicBtn.addEventListener('click', stopMicrophone);
+        elements.nextBtn.addEventListener('click', () => executeCommand('next'));
+        elements.prevBtn.addEventListener('click', () => executeCommand('prev'));
+        elements.replayBtn.addEventListener('click', () => executeCommand('replay'));
+        elements.pauseBtn.addEventListener('click', () => executeCommand('pause_listen'));
+        elements.resumeBtn.addEventListener('click', () => executeCommand('resume_listen'));
+        elements.manualPlayBtn.addEventListener('click', manualPlay);
+
+        // Enter key for manual play
+        elements.manualCueId.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') manualPlay();
+        });
+
+        // Save settings on change
+        [elements.baseUrl, elements.apiToken, elements.chunkLength].forEach(el => {
+            el.addEventListener('change', saveSettings);
+        });
+
+        // Initialize
+        loadSettings();
+        updateConnectionStatus(false);
+        updateMicStatus(false, false);
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+            }
+        });
+    </script>
+</body>
+</html>
