@@ -900,7 +900,7 @@ LANGUAGE = "en"  # Hindi for transcription
 SILENCE_THRESHOLD = 0.01  # Adjust as needed
 SILENCE_DURATION = 1.0  # Seconds of silence to consider end of utterance
 MATCH_COOLDOWN = 5  # Seconds to ignore new matches after a playback
-MATCH_THRESHOLD_SCORE = 70  # Fuzzy match threshold (0-100)
+MATCH_THRESHOLD_SCORE = 60  # Fuzzy match threshold (0-100)
 
 # --- Logging Setup ---
 logging.basicConfig(
