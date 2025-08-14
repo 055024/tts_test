@@ -4,3 +4,6 @@ numpy
 playsound
 pynput
 rapidfuzz
+streamlit
+soundfile
+librosa
