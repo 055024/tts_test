@@ -1,7 +1,6 @@
 faster-whisper
 sounddevice
 numpy
-playsound
 pynput
 rapidfuzz
 streamlit
