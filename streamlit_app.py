@@ -62,7 +62,7 @@ if 'last_match_score' not in st.session_state:
     st.session_state.last_match_score = 0
 
 # Audio input
-st.header("1. Record or Upload Audio")
+st.header("1. Upload Audio")
 audio_file = st.file_uploader(
     "Upload or record audio (wav, mp3, ogg, mpga)", 
     type=["wav", "mp3", "ogg", "mpga"]
