@@ -63,13 +63,37 @@ if 'last_match_score' not in st.session_state:
 
 # Audio input
 st.header("1. Record or Upload Audio")
-audio_file = st.file_uploader("Upload a WAV file (16kHz mono recommended)", type=["wav", "mp3", "m4a"])
+audio_file = st.file_uploader(
+    "Upload or record audio (wav, mp3, ogg, mpga)", 
+    type=["wav", "mp3", "ogg", "mpga"]
+)
 audio_bytes = None
 if audio_file is not None:
     audio_bytes = audio_file.read()
     st.audio(audio_bytes, format='audio/wav')
 
 # Transcription and Matching
+# if audio_bytes:
+#     with st.spinner("Transcribing and matching..."):
+#         transcription = transcribe_audio(audio_bytes, model)
+#         st.session_state.last_transcription = transcription
+#         match, score, idx = process.extractOne(transcription, cue_texts, scorer=fuzz.partial_ratio)
+#         st.session_state.last_match_score = score
+#         st.session_state.current_cue_index = idx if score >= MATCH_THRESHOLD_SCORE else 0
+#         st.write(f"**Transcription:** {transcription}")
+#         st.write(f"**Best Match:** {match}")
+#         st.write(f"**Score:** {score}")
+#         if score >= MATCH_THRESHOLD_SCORE:
+#             st.success(f"Matched cue {script_cues[idx]['id']}! Play below.")
+#             # Automatically play the matched cue audio
+#             audio_path = os.path.join("audio", script_cues[idx]["en_audio"])
+#             if os.path.exists(audio_path):
+#                 audio_bytes = open(audio_path, "rb").read()
+#                 st.audio(audio_bytes, format="audio/wav", start_time=0)
+#             else:
+#                 st.error("Matched audio file not found.")
+#         else:
+#             st.warning("No cue passed the match threshold.")
 if audio_bytes:
     with st.spinner("Transcribing and matching..."):
         transcription = transcribe_audio(audio_bytes, model)
@@ -82,6 +106,13 @@ if audio_bytes:
         st.write(f"**Score:** {score}")
         if score >= MATCH_THRESHOLD_SCORE:
             st.success(f"Matched cue {script_cues[idx]['id']}! Play below.")
+            # Automatically play the matched cue audio
+            audio_path = os.path.join("audio", script_cues[idx]["en_audio"])
+            if os.path.exists(audio_path):
+                cue_audio_bytes = open(audio_path, "rb").read()
+                st.audio(cue_audio_bytes, format="audio/wav", start_time=0)
+            else:
+                st.error("Matched audio file not found.")
         else:
             st.warning("No cue passed the match threshold.")
 
