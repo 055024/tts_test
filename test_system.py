@@ -11,7 +11,7 @@ import sys
 
 def test_api_endpoints():
     """Test the API endpoints."""
-    base_url = "http://localhost:8000"
+    base_url = "http://localhost:8001"
     
     print("Testing API endpoints...")
     
@@ -91,7 +91,7 @@ def main():
     print("   python remote_api.py")
     print()
     print("2. Open index.html in a web browser")
-    print("3. Configure the backend URL (http://localhost:8000)")
+    print("3. Configure the backend URL (http://localhost:8001)")
     print("4. Click 'Connect' and start using the controls")
     
     print("\n🌐 API Endpoints:")

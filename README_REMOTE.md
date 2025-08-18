@@ -34,7 +34,7 @@ pip install fastapi uvicorn python-multipart
 python remote_api.py
 ```
 
-The server will start on `http://0.0.0.0:8000`
+The server will start on `http://0.0.0.0:8001`
 
 ### 3. Open the Web Interface
 
@@ -45,7 +45,7 @@ Open `index.html` in any modern web browser. The frontend works from:
 
 ### 4. Configure and Connect
 
-1. Set Backend URL: `http://localhost:8000` (or your server IP)
+1. Set Backend URL: `http://localhost:8001` (or your server IP)
 2. Set API Token: (optional, leave blank if not using authentication)
 3. Click **Connect**
 4. Grant microphone permissions when prompted
@@ -168,7 +168,7 @@ Audio is automatically converted to 16kHz mono PCM and fed to the matching engin
 ### Development
 ```bash
 python remote_api.py
-# Serves on localhost:8000
+# Serves on localhost:8001
 ```
 
 ### Production with Nginx
@@ -178,7 +178,7 @@ server {
     server_name your-domain.com;
     
     location /api/ {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:8001;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -199,7 +199,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY . .
-EXPOSE 8000
+EXPOSE 8001
 
 CMD ["python", "remote_api.py"]
 ```

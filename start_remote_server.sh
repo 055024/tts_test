@@ -32,12 +32,14 @@ if [ $? -ne 0 ]; then
     pip install fastapi uvicorn python-multipart
 fi
 
-# Set environment variables (optional)
-export API_TOKEN=""  # Set this if you want authentication
-export CORS_ORIGINS="*"  # Allow all origins
+# Set environment variables
+export BIND_HOST="127.0.0.1"   # Bind backend locally; Nginx will proxy from public
+export BIND_PORT="8001"        # Backend port
+export API_TOKEN=""            # Set this if you want authentication
+export CORS_ORIGINS="*"        # Allow all origins (or set specific domains)
 
-echo "🚀 Starting server on http://0.0.0.0:8000"
-echo "📱 Open index.html in your browser to access the web interface"
+echo "🚀 Starting backend on http://${BIND_HOST}:${BIND_PORT}"
+echo "🔗 Nginx will serve frontend on http://<your-server-ip>:3100 and proxy /api to backend"
 echo "🛑 Press Ctrl+C to stop the server"
 echo ""
 

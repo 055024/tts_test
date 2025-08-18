@@ -295,9 +295,9 @@
 
                 <!-- Main Controls -->
                 <div class="button-grid">
-                    <button id="connectBtn" class="btn btn-primary">Connect</button>
-                    <button id="startMicBtn" class="btn btn-success" disabled>Start Mic</button>
-                    <button id="stopMicBtn" class="btn btn-danger" disabled>Stop Mic</button>
+                    <button id="btnConnect" class="btn btn-primary">Connect</button>
+                    <button id="btnStart" class="btn btn-success" disabled>Start Mic</button>
+                    <button id="btnStop" class="btn btn-danger" disabled>Stop Mic</button>
                     <button id="nextBtn" class="btn btn-secondary" disabled>Next</button>
                     <button id="prevBtn" class="btn btn-secondary" disabled>Previous</button>
                     <button id="replayBtn" class="btn btn-warning" disabled>Replay</button>
@@ -377,359 +377,306 @@
     </div>
 
     <script>
-        // Global state
-        let baseUrl = '';
-        let apiToken = '';
-        let chunkMs = 500;
-        let isConnected = false;
-        let isMicActive = false;
-        let isRecording = false;
-        let mediaRecorder = null;
-        let audioStream = null;
-        let statusInterval = null;
-        let lastStatusTime = 0;
+(() => {
+  // ---- tiny UI helpers ----
+  const log = (m) => { console.log(m); const el = document.getElementById('log'); if (el) el.value += m + '\n'; };
+  const byId = (id) => document.getElementById(id);
 
-        // DOM elements
-        const elements = {
-            baseUrl: document.getElementById('baseUrl'),
-            apiToken: document.getElementById('apiToken'),
-            chunkLength: document.getElementById('chunkLength'),
-            connectionStatus: document.getElementById('connectionStatus'),
-            connectBtn: document.getElementById('connectBtn'),
-            startMicBtn: document.getElementById('startMicBtn'),
-            stopMicBtn: document.getElementById('stopMicBtn'),
-            nextBtn: document.getElementById('nextBtn'),
-            prevBtn: document.getElementById('prevBtn'),
-            replayBtn: document.getElementById('replayBtn'),
-            pauseBtn: document.getElementById('pauseBtn'),
-            resumeBtn: document.getElementById('resumeBtn'),
-            manualCueId: document.getElementById('manualCueId'),
-            manualPlayBtn: document.getElementById('manualPlayBtn'),
-            micStatus: document.getElementById('micStatus'),
-            recordingStatus: document.getElementById('recordingStatus'),
-            currentCueIndex: document.getElementById('currentCueIndex'),
-            lastMatchId: document.getElementById('lastMatchId'),
-            matchScore: document.getElementById('matchScore'),
-            spokenText: document.getElementById('spokenText'),
-            listeningStatus: document.getElementById('listeningStatus'),
-            playingStatus: document.getElementById('playingStatus'),
-            uptime: document.getElementById('uptime'),
-            totalCues: document.getElementById('totalCues'),
-            latency: document.getElementById('latency')
+  // ---- resolve backend base URL from the UI ----
+  const getBaseUrl = () => (byId('baseUrl')?.value || '').trim();
+
+  // ---- fetch wrapper that respects baseUrl and logs errors ----
+  const apiFetch = async (path, opts={}) => {
+    const base = getBaseUrl();
+    if (!base) throw new Error('Backend URL is empty');
+    const url = path.startsWith('/api') ? (base + path) : (base + '/api' + path);
+    const res = await fetch(url, opts);
+    return res;
+  };
+
+  // ---- pick a supported MediaRecorder mime type ----
+  // Prefer OGG/Opus first because many backends/ffmpeg handle timesliced OGG chunks better than WebM
+  function pickSupportedMime() {
+    const candidates = [
+      'audio/ogg;codecs=opus',
+      'audio/ogg',
+      'audio/webm;codecs=opus',
+      'audio/webm'
+    ];
+    for (const t of candidates) {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    }
+    // If nothing is supported, return empty to let MediaRecorder choose default
+    return '';
+  }
+
+  let mediaRecorder = null;
+  let stream = null;
+  let isConnected = false;
+
+  // Fallback PCM capture state (for browsers that only produce headerless WebM chunks)
+  let audioCtx = null;
+  let sourceNode = null;
+  let procNode = null;
+  let pcmBuffer = []; // array of Float32Array
+  let pcmSampleRate = 0;
+  let lastFlushAt = 0;
+  let usePcmFallback = false;
+  const FORCE_WAV_CHUNKS = true; // force WAV chunks for reliable per-slice decoding
+
+  async function connectBackend() {
+    setConnectionStatus(false, '(connecting…)');
+    try {
+      const t0 = performance.now();
+      const res = await apiFetch('/api/status', { method: 'GET' });
+      const js = await res.json();
+      const dt = Math.round(performance.now() - t0);
+      log('[connect] OK: ' + JSON.stringify(js));
+
+      // Robust readiness detection: accept boolean ok, engine=="ready", or presence of key fields
+      const ready = (js && (js.ok === true || js.engine === 'ready' || js.total_cues >= 0));
+      isConnected = !!ready;
+      setConnectionStatus(isConnected, `(latency ${dt}ms)`);
+
+      // Update some status fields if present
+      if (byId('totalCues') && typeof js.total_cues !== 'undefined') byId('totalCues').textContent = js.total_cues;
+      if (byId('uptime') && typeof js.uptime_s !== 'undefined') byId('uptime').textContent = js.uptime_s + 's';
+    } catch (err) {
+      isConnected = false;
+      setConnectionStatus(false, '(failed)');
+      log('[connect] FAIL: ' + (err?.message || err));
+      alert('Could not reach backend: ' + (err?.message || err));
+    }
+    updateButtons();
+  }
+
+  async function startMic() {
+    try {
+      if (!isConnected) throw new Error('Connect to backend first');
+      // request mic with user gesture (button click)
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = pickSupportedMime();
+      log('[mic] preferred mime=' + (mime || '(default)'));
+
+      const chunkMs = Math.max(200, Math.min(5000, parseInt(byId('chunkLength')?.value || '1000', 10) || 1000)); // use UI value
+
+      // If forcing WAV, or OGG is unsupported, use PCM fallback → WAV chunks
+      if (FORCE_WAV_CHUNKS || !mime || !mime.includes('ogg')) {
+        usePcmFallback = true;
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        pcmSampleRate = audioCtx.sampleRate;
+        sourceNode = audioCtx.createMediaStreamSource(stream);
+        procNode = audioCtx.createScriptProcessor(4096, 1, 1);
+        let flushTimerId = null;
+        log('[mic] Using WAV chunking');
+
+        const copyChannel = (src) => {
+          const out = new Float32Array(src.length);
+          out.set(src);
+          return out;
         };
 
-        // Load settings from localStorage
-        function loadSettings() {
-            elements.baseUrl.value = localStorage.getItem('tts_baseUrl') || 'http://localhost:8001';
-            elements.apiToken.value = localStorage.getItem('tts_apiToken') || '';
-            elements.chunkLength.value = localStorage.getItem('tts_chunkLength') || '500';
-        }
+        const floatTo16BitPCM = (input) => {
+          const output = new Int16Array(input.length);
+          for (let i = 0; i < input.length; i++) {
+            let s = Math.max(-1, Math.min(1, input[i]));
+            output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+          return output;
+        };
 
-        // Save settings to localStorage
-        function saveSettings() {
-            localStorage.setItem('tts_baseUrl', elements.baseUrl.value);
-            localStorage.setItem('tts_apiToken', elements.apiToken.value);
-            localStorage.setItem('tts_chunkLength', elements.chunkLength.value);
-        }
+        const encodeWav = (samples, sampleRate) => {
+          const headerSize = 44;
+          const bytesPerSample = 2; // 16-bit PCM
+          const dataSize = samples.length * bytesPerSample;
+          const buffer = new ArrayBuffer(headerSize + dataSize);
+          const view = new DataView(buffer);
 
-        // Show toast notification
-        function showToast(message, type = 'error') {
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            toast.textContent = message;
-            document.body.appendChild(toast);
-            
-            setTimeout(() => toast.classList.add('show'), 100);
-            setTimeout(() => {
-                toast.classList.remove('show');
-                setTimeout(() => document.body.removeChild(toast), 300);
-            }, 3000);
-        }
+          const writeString = (offset, s) => { for (let i=0;i<s.length;i++) view.setUint8(offset+i, s.charCodeAt(i)); };
 
-        // API helper function
-        async function apiRequest(path, options = {}) {
-            const url = baseUrl + path;
-            const headers = { ...options.headers };
-            
-            if (apiToken) {
-                headers['Authorization'] = 'Bearer ' + apiToken;
+          // RIFF header
+          writeString(0, 'RIFF');
+          view.setUint32(4, 36 + dataSize, true);
+          writeString(8, 'WAVE');
+          writeString(12, 'fmt ');
+          view.setUint32(16, 16, true);    // PCM chunk size
+          view.setUint16(20, 1, true);     // PCM format
+          view.setUint16(22, 1, true);     // mono
+          view.setUint32(24, sampleRate, true);
+          view.setUint32(28, sampleRate * 2, true); // byte rate
+          view.setUint16(32, 2, true);     // block align
+          view.setUint16(34, 16, true);    // bits per sample
+
+          writeString(36, 'data');
+          view.setUint32(40, dataSize, true);
+
+          // PCM data
+          const pcm16 = floatTo16BitPCM(samples);
+          let offset = 44;
+          for (let i = 0; i < pcm16.length; i++, offset += 2) {
+            view.setInt16(offset, pcm16[i], true);
+          }
+          return new Blob([view], { type: 'audio/wav' });
+        };
+
+        const flushPcm = async () => {
+          if (!pcmBuffer.length) return;
+          // Concatenate buffered frames
+          let total = 0;
+          for (const b of pcmBuffer) total += b.length;
+          const merged = new Float32Array(total);
+          let off = 0;
+          for (const b of pcmBuffer) { merged.set(b, off); off += b.length; }
+          pcmBuffer = [];
+          lastFlushAt = performance.now();
+
+          const wavBlob = encodeWav(merged, pcmSampleRate);
+          const fd = new FormData();
+          const fname = `chunk-${Date.now()}.wav`;
+          fd.append('audio', wavBlob, fname);
+          const url = getBaseUrl() + '/api/ingest?ts=' + Date.now();
+          try {
+            const r = await fetch(url, { method: 'POST', body: fd });
+            if (!r.ok) {
+              const txt = await r.text();
+              log(`[ingest] HTTP ${r.status} ${r.statusText} – ${txt.slice(0,300)}`);
             }
-            
-            const startTime = Date.now();
-            
-            try {
-                const response = await fetch(url, { ...options, headers });
-                const latency = Date.now() - startTime;
-                elements.latency.textContent = latency + ' ms';
-                
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`HTTP ${response.status}: ${errorText}`);
-                }
-                
-                return response.json().catch(() => ({}));
-            } catch (error) {
-                elements.latency.textContent = 'Error';
-                throw error;
-            }
+          } catch (e) {
+            log('[ingest] wav send error: ' + (e?.message || e));
+          }
+        };
+
+        procNode.onaudioprocess = (ev) => {
+          try {
+            const chan = ev.inputBuffer.getChannelData(0);
+            pcmBuffer.push(copyChannel(chan));
+          } catch {}
+        };
+
+        sourceNode.connect(procNode);
+        procNode.connect(audioCtx.destination); // keep node alive
+        lastFlushAt = performance.now();
+        flushTimerId = setInterval(() => { flushPcm(); }, chunkMs);
+        log('[mic] PCM fallback active at ' + pcmSampleRate + ' Hz');
+
+        // attach to mediaRecorder-like refs for stop logic
+        mediaRecorder = { state: 'recording', _stop: () => {
+          try { clearInterval(flushTimerId); } catch {}
+          try { flushPcm(); } catch {}
+          try { procNode && procNode.disconnect(); } catch {}
+          try { sourceNode && sourceNode.disconnect(); } catch {}
+          try { audioCtx && audioCtx.close(); } catch {}
+          mediaRecorder.state = 'inactive';
+        }};
+      }
+    } catch (err) {
+      log('[mic] start error: ' + (err?.message || err));
+      alert('Microphone start failed: ' + (err?.message || err));
+    }
+    updateButtons();
+  }
+
+  function stopMic() {
+    try {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        if (typeof mediaRecorder._stop === 'function') {
+          mediaRecorder._stop();
+        } else {
+          mediaRecorder.stop();
         }
+        log('[mic] stopped');
+      }
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+    } catch (err) {
+      log('[mic] stop error: ' + (err?.message || err));
+    } finally {
+      updateButtons();
+    }
+  }
 
-        // API POST helper
-        async function apiPost(path, body) {
-            return apiRequest(path, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
-        }
+  function setDisabled(id, disabled) {
+    const el = byId(id);
+    if (!el) return;
+    el.disabled = !!disabled;
+  }
 
-        // Update connection status
-        function updateConnectionStatus(connected) {
-            isConnected = connected;
-            elements.connectionStatus.textContent = connected ? 'Connected' : 'Disconnected';
-            elements.connectionStatus.className = `connection-status ${connected ? 'connected' : 'disconnected'}`;
-            
-            // Enable/disable controls
-            const controlButtons = [
-                elements.startMicBtn, elements.stopMicBtn, elements.nextBtn,
-                elements.prevBtn, elements.replayBtn, elements.pauseBtn,
-                elements.resumeBtn, elements.manualCueId, elements.manualPlayBtn
-            ];
-            
-            controlButtons.forEach(btn => btn.disabled = !connected);
-            elements.connectBtn.textContent = connected ? 'Disconnect' : 'Connect';
-        }
+  function setConnectionStatus(connected, note = '') {
+    const el = byId('connectionStatus');
+    if (!el) return;
+    el.textContent = connected ? 'Connected' : 'Disconnected';
+    if (note) el.textContent += ' ' + note;
+    el.classList.toggle('connected', connected);
+    el.classList.toggle('disconnected', !connected);
+  }
 
-        // Update microphone status
-        function updateMicStatus(active, recording) {
-            isMicActive = active;
-            isRecording = recording;
-            
-            elements.micStatus.innerHTML = `${active ? 'Active' : 'Inactive'} <span class="indicator ${active ? 'active' : 'inactive'}"></span>`;
-            elements.recordingStatus.innerHTML = `${recording ? 'Recording' : 'Stopped'} <span class="indicator ${recording ? 'active' : 'inactive'}"></span>`;
-            
-            elements.startMicBtn.disabled = !isConnected || active;
-            elements.stopMicBtn.disabled = !isConnected || !active;
-        }
+  function updateButtons() {
+    const recording = mediaRecorder?.state === 'recording';
+    // Mic controls
+    setDisabled('btnStart', !isConnected || recording);
+    setDisabled('btnStop', !recording);
+    // Action buttons enabled when connected
+    ['nextBtn','prevBtn','replayBtn','pauseBtn','resumeBtn','manualPlayBtn','manualCueId']
+      .forEach(id => setDisabled(id, !isConnected));
+  }
 
-        // Connect/disconnect
-        async function toggleConnection() {
-            if (isConnected) {
-                // Disconnect
-                if (statusInterval) {
-                    clearInterval(statusInterval);
-                    statusInterval = null;
-                }
-                await stopMicrophone();
-                updateConnectionStatus(false);
-                return;
-            }
+  // ---- wire up buttons (adjust ids if yours differ) ----
+  window.addEventListener('DOMContentLoaded', () => {
+    byId('btnConnect')?.addEventListener('click', connectBackend);
+    byId('btnStart')?.addEventListener('click', startMic);
+    byId('btnStop')?.addEventListener('click', stopMic);
 
-            // Connect
-            baseUrl = elements.baseUrl.value.trim();
-            apiToken = elements.apiToken.value.trim();
-            chunkMs = parseInt(elements.chunkLength.value) || 500;
-            
-            if (!baseUrl) {
-                showToast('Please enter a backend URL');
-                return;
-            }
-            
-            try {
-                await apiRequest('/api/status');
-                updateConnectionStatus(true);
-                saveSettings();
-                startStatusPolling();
-                showToast('Connected successfully!', 'success');
-            } catch (error) {
-                showToast(`Connection failed: ${error.message}`);
-            }
-        }
-
-        // Start microphone
-        async function startMicrophone() {
-            try {
-                audioStream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: {
-                        sampleRate: 16000,
-                        channelCount: 1,
-                        echoCancellation: true,
-                        noiseSuppression: true
-                    }
-                });
-                
-                // Try WebM/Opus first
-                let mimeType = 'audio/webm;codecs=opus';
-                if (!MediaRecorder.isTypeSupported(mimeType)) {
-                    mimeType = 'audio/webm';
-                    if (!MediaRecorder.isTypeSupported(mimeType)) {
-                        mimeType = 'audio/wav';
-                    }
-                }
-                
-                mediaRecorder = new MediaRecorder(audioStream, { mimeType });
-                
-                mediaRecorder.ondataavailable = async (event) => {
-                    if (!event.data || event.data.size === 0) return;
-                    
-                    try {
-                        const timestamp = Date.now();
-                        const headers = {};
-                        if (apiToken) headers['Authorization'] = 'Bearer ' + apiToken;
-                        
-                        await fetch(baseUrl + '/api/ingest?ts=' + timestamp, {
-                            method: 'POST',
-                            headers: {
-                                ...headers,
-                                'Content-Type': mimeType
-                            },
-                            body: event.data
-                        });
-                    } catch (error) {
-                        console.error('Audio upload error:', error);
-                        showToast('Audio upload failed: ' + error.message);
-                    }
-                };
-                
-                mediaRecorder.onerror = (event) => {
-                    console.error('MediaRecorder error:', event.error);
-                    showToast('Recording error: ' + event.error);
-                };
-                
-                mediaRecorder.start(chunkMs);
-                updateMicStatus(true, true);
-                showToast('Microphone started', 'success');
-                
-            } catch (error) {
-                console.error('Microphone error:', error);
-                showToast('Microphone access failed: ' + error.message);
-            }
-        }
-
-        // Stop microphone
-        async function stopMicrophone() {
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                mediaRecorder.stop();
-            }
-            
-            if (audioStream) {
-                audioStream.getTracks().forEach(track => track.stop());
-                audioStream = null;
-            }
-            
-            mediaRecorder = null;
-            updateMicStatus(false, false);
-            showToast('Microphone stopped', 'success');
-        }
-
-        // Execute command
-        async function executeCommand(cmd) {
-            try {
-                await apiPost('/api/cmd', { cmd });
-                showToast(`Command '${cmd}' executed`, 'success');
-            } catch (error) {
-                showToast(`Command failed: ${error.message}`);
-            }
-        }
-
-        // Manual play
-        async function manualPlay() {
-            const cueId = parseInt(elements.manualCueId.value);
-            if (!cueId) {
-                showToast('Please enter a valid cue ID');
-                return;
-            }
-            
-            try {
-                await apiPost('/api/manual', { cue_id: cueId });
-                showToast(`Playing cue ${cueId}`, 'success');
-                elements.manualCueId.value = '';
-            } catch (error) {
-                showToast(`Manual play failed: ${error.message}`);
-            }
-        }
-
-        // Refresh status
-        async function refreshStatus() {
-            if (!isConnected) return;
-            
-            try {
-                lastStatusTime = Date.now();
-                const status = await apiRequest('/api/status');
-                
-                elements.currentCueIndex.textContent = status.current_cue_index;
-                elements.lastMatchId.textContent = status.last_match.id || '-';
-                elements.matchScore.textContent = status.last_match.score ? status.last_match.score.toFixed(1) : '-';
-                elements.spokenText.textContent = status.last_match.spoken_text || '-';
-                
-                const listeningActive = status.is_listening;
-                const playingActive = status.is_playing;
-                
-                elements.listeningStatus.innerHTML = `${listeningActive ? 'Active' : 'Inactive'} <span class="indicator ${listeningActive ? 'active' : 'inactive'}"></span>`;
-                elements.playingStatus.innerHTML = `${playingActive ? 'Playing' : 'Idle'} <span class="indicator ${playingActive ? 'active' : 'inactive'}"></span>`;
-                
-                elements.uptime.textContent = formatUptime(status.uptime_s);
-                elements.totalCues.textContent = status.total_cues || '-';
-                
-            } catch (error) {
-                console.error('Status refresh error:', error);
-                // Don't show toast for every status error to avoid spam
-                if (Date.now() - lastStatusTime > 5000) {
-                    showToast('Status refresh failed');
-                }
-            }
-        }
-
-        // Format uptime
-        function formatUptime(seconds) {
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const secs = seconds % 60;
-            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-        }
-
-        // Start status polling
-        function startStatusPolling() {
-            if (statusInterval) clearInterval(statusInterval);
-            statusInterval = setInterval(refreshStatus, 750);
-            refreshStatus(); // Initial refresh
-        }
-
-        // Event listeners
-        elements.connectBtn.addEventListener('click', toggleConnection);
-        elements.startMicBtn.addEventListener('click', startMicrophone);
-        elements.stopMicBtn.addEventListener('click', stopMicrophone);
-        elements.nextBtn.addEventListener('click', () => executeCommand('next'));
-        elements.prevBtn.addEventListener('click', () => executeCommand('prev'));
-        elements.replayBtn.addEventListener('click', () => executeCommand('replay'));
-        elements.pauseBtn.addEventListener('click', () => executeCommand('pause_listen'));
-        elements.resumeBtn.addEventListener('click', () => executeCommand('resume_listen'));
-        elements.manualPlayBtn.addEventListener('click', manualPlay);
-
-        // Enter key for manual play
-        elements.manualCueId.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') manualPlay();
+    // Command buttons
+    const doCmd = async (cmd) => {
+      if (!isConnected) return alert('Not connected');
+      try {
+        const r = await apiFetch('/api/cmd', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ cmd })
         });
+        const j = await r.json().catch(() => ({}));
+        log(`[cmd] ${cmd} -> ${r.status} ${r.statusText} ${JSON.stringify(j)}`);
+      } catch (e) {
+        log(`[cmd] ${cmd} error: ${e?.message || e}`);
+      }
+    };
+    byId('nextBtn')?.addEventListener('click', () => doCmd('next'));
+    byId('prevBtn')?.addEventListener('click', () => doCmd('prev'));
+    byId('replayBtn')?.addEventListener('click', () => doCmd('replay'));
+    byId('pauseBtn')?.addEventListener('click', () => doCmd('pause_listen'));
+    byId('resumeBtn')?.addEventListener('click', () => doCmd('resume_listen'));
 
-        // Save settings on change
-        [elements.baseUrl, elements.apiToken, elements.chunkLength].forEach(el => {
-            el.addEventListener('change', saveSettings);
+    // Manual play
+    byId('manualPlayBtn')?.addEventListener('click', async () => {
+      if (!isConnected) return alert('Not connected');
+      const val = parseInt(byId('manualCueId')?.value || '');
+      if (!Number.isFinite(val)) return alert('Enter a valid cue id');
+      try {
+        const r = await apiFetch('/api/manual', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ cue_id: val })
         });
+        const j = await r.json().catch(() => ({}));
+        log(`[manual] cue_id=${val} -> ${r.status} ${r.statusText} ${JSON.stringify(j)}`);
+      } catch (e) {
+        log(`[manual] error: ${e?.message || e}`);
+      }
+    });
 
-        // Initialize
-        loadSettings();
-        updateConnectionStatus(false);
-        updateMicStatus(false, false);
-
-        // Cleanup on page unload
-        window.addEventListener('beforeunload', () => {
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                mediaRecorder.stop();
-            }
-            if (audioStream) {
-                audioStream.getTracks().forEach(track => track.stop());
-            }
-        });
+    // Optional: create a live log area if not present
+    if (!byId('log')) {
+      const ta = document.createElement('textarea');
+      ta.id = 'log';
+      ta.rows = 10;
+      ta.style.width = '100%';
+      ta.placeholder = 'Logs…';
+      document.body.appendChild(ta);
+    }
+    updateButtons();
+  });
+})();
     </script>
 </body>
 </html>

@@ -1,0 +1,26 @@
+[Unit]
+Description=TTS Remote Controller Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ashok/Desktop/tts_test
+Environment=BIND_HOST=127.0.0.1
+Environment=BIND_PORT=8001
+# Optional security
+# Environment=API_TOKEN=changeme
+# Environment=CORS_ORIGINS=*
+ExecStart=/home/ashok/Desktop/tts_test/venv/bin/python /home/ashok/Desktop/tts_test/remote_api.py
+Restart=always
+RestartSec=3
+User=www-data
+Group=www-data
+
+# Hardening (optional, relax if needed)
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

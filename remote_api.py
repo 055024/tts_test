@@ -1,365 +1,137 @@
-#!/usr/bin/env python3
-"""
-Remote API adapter for the TTS trigger-to-playback system.
-Provides HTTP endpoints to control the existing app.py backend without modifying it.
-"""
+import os, time, tempfile, subprocess
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_500_INTERNAL_SERVER_ERROR
+from starlette.middleware.cors import CORSMiddleware
 
-import os
-import time
-import threading
-import queue
-import subprocess
-import tempfile
-import logging
-from typing import Optional, Dict, Any
-import numpy as np
+from app import app as app_api  # exposes status(), process_command(), manual_override(), process_audio()
+from helpers import pick_ext, save_atomic_bytes, validate_with_ffprobe, quick_header_check
 
-from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
-import uvicorn
-
-# Import the existing app module
-import app
-
-# --- Configuration ---
-API_TOKEN = os.getenv("API_TOKEN")  # Optional bearer token
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
-BIND_HOST = os.getenv("BIND_HOST", "0.0.0.0")
-BIND_PORT = int(os.getenv("BIND_PORT", "8001"))  # Changed default to 8001
-
-# --- Logging Setup ---
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger(__name__)
-
-# --- Global State ---
-command_queue = queue.Queue()
-is_listening = True
-is_frontend_mode = False
-last_match_info = {"id": None, "score": 0.0, "spoken_text": ""}
-start_time = time.time()
-
-# --- Security ---
-security = HTTPBearer(auto_error=False)
-
-def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
-    if API_TOKEN:
-        if not credentials or credentials.credentials != API_TOKEN:
-            raise HTTPException(status_code=401, detail="Invalid or missing token")
-    return True
-
-# --- Request Models ---
-class CommandRequest(BaseModel):
-    cmd: str
-    arg: Optional[Any] = None
-
-class ManualPlayRequest(BaseModel):
-    cue_id: int
-
-# --- FastAPI App ---
-app_api = FastAPI(title="TTS Remote Controller", version="1.0.0")
-
-# CORS middleware
-app_api.add_middleware(
+app = FastAPI()
+app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# --- Command Processing Thread ---
-def command_processor():
-    """Process commands from the API queue and execute them on the app module."""
-    global is_listening, last_match_info
-    
-    while True:
-        try:
-            cmd_data = command_queue.get(timeout=1)
-            cmd = cmd_data["cmd"]
-            
-            log.info(f"Processing command: {cmd}")
-            
-            if cmd == "next":
-                if app.current_cue_index < len(app.script_cues) - 1:
-                    app.current_cue_index += 1
-                    cue = app.script_cues[app.current_cue_index]
-                    app.playback_queue.put(os.path.join(app.AUDIO_DIR, cue['en_audio'].split('/')[-1]))
-                    app.last_played_cue_id = cue['id']
-                    app.last_match_time = time.time()
-                    log.info(f"Next: Playing cue {cue['id']}")
-                    
-            elif cmd == "prev":
-                if app.current_cue_index > 0:
-                    app.current_cue_index -= 1
-                    cue = app.script_cues[app.current_cue_index]
-                    app.playback_queue.put(os.path.join(app.AUDIO_DIR, cue['en_audio'].split('/')[-1]))
-                    app.last_played_cue_id = cue['id']
-                    app.last_match_time = time.time()
-                    log.info(f"Previous: Playing cue {cue['id']}")
-                    
-            elif cmd == "replay":
-                if app.last_played_cue_id is not None:
-                    cue = next((c for c in app.script_cues if c['id'] == app.last_played_cue_id), None)
-                    if cue:
-                        app.playback_queue.put(os.path.join(app.AUDIO_DIR, cue['en_audio'].split('/')[-1]))
-                        app.last_match_time = time.time()
-                        log.info(f"Replay: Playing cue {cue['id']}")
-                        
-            elif cmd == "pause_listen":
-                is_listening = False
-                log.info("Listening paused")
-                
-            elif cmd == "resume_listen":
-                is_listening = True
-                log.info("Listening resumed")
-                
-        except queue.Empty:
-            continue
-        except Exception as e:
-            log.error(f"Command processing error: {e}")
+@app.get("/api/status")
+def status():
+    # Provide a stable contract for the frontend while preserving existing fields
+    payload = app_api.status()
+    payload.setdefault("ok", True)
+    payload.setdefault("engine", "ready")
+    payload.setdefault("frontend_mode", True)
+    return payload
 
-# --- Audio Processing Functions ---
-def convert_webm_to_pcm(webm_data: bytes) -> np.ndarray:
-    """Convert WebM/Opus audio to 16kHz mono PCM using ffmpeg."""
+@app.post("/api/cmd")
+async def cmd(request: Request):
     try:
-        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_input:
-            temp_input.write(webm_data)
-            temp_input_path = temp_input.name
-            
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_output:
-            temp_output_path = temp_output.name
-            
-        # Convert using ffmpeg
-        cmd = [
-            'ffmpeg', '-y', '-i', temp_input_path,
-            '-ar', '16000', '-ac', '1', '-f', 'wav',
-            temp_output_path
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            log.error(f"FFmpeg error: {result.stderr}")
-            raise Exception("Audio conversion failed")
-            
-        # Read the converted audio
-        import wave
-        with wave.open(temp_output_path, 'rb') as wav_file:
-            frames = wav_file.readframes(wav_file.getnframes())
-            audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-            
-        # Cleanup
-        os.unlink(temp_input_path)
-        os.unlink(temp_output_path)
-        
-        return audio_data
-        
-    except Exception as e:
-        log.error(f"Audio conversion error: {e}")
-        raise
+        data = await request.json()
+    except Exception:
+        data = {}
+    return app_api.process_command(data)
 
-def feed_audio_to_app(audio_data: np.ndarray):
-    """Feed converted audio data to the app's audio queue in chunks."""
-    chunk_size = app.CHUNK_SIZE
-    for i in range(0, len(audio_data), chunk_size):
-        chunk = audio_data[i:i + chunk_size]
-        if len(chunk) < chunk_size:
-            # Pad the last chunk if necessary
-            chunk = np.pad(chunk, (0, chunk_size - len(chunk)), 'constant')
-        app.audio_queue.put(chunk)
-
-# --- API Endpoints ---
-@app_api.post("/api/cmd")
-async def execute_command(request: CommandRequest, _: bool = Depends(verify_token)):
-    """Execute a control command (next, prev, replay, pause_listen, resume_listen)."""
-    valid_commands = ["next", "prev", "replay", "pause_listen", "resume_listen"]
-    
-    if request.cmd not in valid_commands:
-        raise HTTPException(status_code=400, detail=f"Invalid command. Valid: {valid_commands}")
-    
-    command_queue.put({"cmd": request.cmd, "arg": request.arg})
-    return {"status": "ok", "command": request.cmd}
-
-@app_api.post("/api/manual")
-async def manual_play(request: ManualPlayRequest, _: bool = Depends(verify_token)):
-    """Manually play a cue by ID."""
-    cue = next((c for c in app.script_cues if c['id'] == request.cue_id), None)
-    if not cue:
-        raise HTTPException(status_code=404, detail=f"Cue ID {request.cue_id} not found")
-    
-    app.current_cue_index = next((i for i, c in enumerate(app.script_cues) if c['id'] == request.cue_id), -1)
-    app.playback_queue.put(os.path.join(app.AUDIO_DIR, cue['en_audio'].split('/')[-1]))
-    app.last_played_cue_id = cue['id']
-    app.last_match_time = time.time()
-    
-    log.info(f"Manual play: Cue {cue['id']} → {cue['en_audio']}")
-    return {"status": "ok", "cue_id": request.cue_id, "audio_file": cue['en_audio']}
-
-@app_api.post("/api/ingest")
-async def ingest_audio(request: Request, _: bool = Depends(verify_token)):
-    """Ingest audio data from browser and feed to the processing pipeline."""
-    global is_frontend_mode
-    
+@app.post("/api/manual")
+async def manual(request: Request):
     try:
-        # Read the raw audio data
-        audio_data = await request.body()
-        if not audio_data:
-            raise HTTPException(status_code=400, detail="No audio data received")
-        
-        # Set frontend mode to disable local mic
-        is_frontend_mode = True
-        
-        # Convert audio to PCM format
-        content_type = request.headers.get("content-type", "")
-        
-        if "audio/webm" in content_type or "audio/ogg" in content_type:
-            pcm_data = convert_webm_to_pcm(audio_data)
-        elif "audio/wav" in content_type:
-            # Assume it's already in the right format, just convert to float32
-            pcm_data = np.frombuffer(audio_data[44:], dtype=np.int16).astype(np.float32) / 32768.0
+        data = await request.json()
+    except Exception:
+        data = {}
+    return app_api.manual_override(data)
+
+@app.post("/api/ingest")
+async def ingest(request: Request):
+    try:
+        ctype = (request.headers.get("content-type", "") or "").lower()
+        raw = None
+        suffix = ".bin"
+        if "multipart/form-data" in ctype:
+            # Properly parse multipart and extract the 'audio' field
+            form = await request.form()
+            up = form.get("audio")
+            if not up or not hasattr(up, "read"):
+                return JSONResponse(status_code=HTTP_400_BAD_REQUEST, content={"error": "missing_audio_field"})
+            file_ct = getattr(up, "content_type", "") or ""
+            suffix = pick_ext(file_ct)
+            raw = await up.read()
         else:
-            # Try to convert anyway
-            pcm_data = convert_webm_to_pcm(audio_data)
-        
-        # Feed to the app's audio processing pipeline
-        feed_audio_to_app(pcm_data)
-        
-        return {"status": "ok", "samples_received": len(pcm_data)}
-        
-    except Exception as e:
-        log.error(f"Audio ingest error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            # Fallback: raw body mode
+            raw = await request.body()  # only returns after the upload fully completes
+            suffix = pick_ext(ctype)
+        tmp_path = save_atomic_bytes(raw, suffix=suffix)
 
-@app_api.get("/api/status")
-async def get_status(_: bool = Depends(verify_token)):
-    """Get current system status."""
-    return {
-        "current_cue_index": app.current_cue_index,
-        "last_match": {
-            "id": last_match_info["id"],
-            "score": last_match_info["score"],
-            "spoken_text": last_match_info["spoken_text"]
-        },
-        "is_listening": is_listening and not is_frontend_mode,
-        "is_playing": app.is_playing,
-        "uptime_s": int(time.time() - start_time),
-        "total_cues": len(app.script_cues),
-        "frontend_mode": is_frontend_mode
-    }
+        min_bytes = 2000  # ~2 KB; adjust if needed
+        size = os.path.getsize(tmp_path)
+        if size < min_bytes:
+            os.remove(tmp_path)  # Clean up the small file
+            return JSONResponse(status_code=204, content={"skip": f"chunk too small: {size} bytes"})
 
-# --- Enhanced Main Logic Monitor ---
-def monitor_transcriptions():
-    """Monitor transcription queue to capture match information for status API."""
-    global last_match_info
-    
-    # We'll hook into the existing transcription processing
-    original_main_logic = app.main_logic
-    
-    def enhanced_main_logic():
-        global last_match_info
-        
-        while True:
-            if app.is_playing or (is_frontend_mode and not is_listening):
-                time.sleep(0.1)
-                continue
+        # quick fast-fail for OGG files
+        if suffix == ".ogg" and not quick_header_check(tmp_path):
+            os.remove(tmp_path)
+            return JSONResponse(status_code=HTTP_400_BAD_REQUEST,
+                                content={"error": "bad_ogg_header"})
+
+        ok, meta = validate_with_ffprobe(tmp_path)
+        if not ok:
+            # Gracefully ignore known short/incomplete container slices from browsers
+            detail = str(meta)
+            if any(k in detail.lower() for k in ["end of file", "ebml header parsing failed", "invalid data found"]):
+                try: os.remove(tmp_path)
+                except: pass
+                return JSONResponse(status_code=204, content={"skip": detail[:200]})
+            os.remove(tmp_path)
+            return JSONResponse(status_code=HTTP_400_BAD_REQUEST,
+                                content={"error": "invalid_media", "detail": meta})
+
+        # Lightweight decode test: try to read the input with ffmpeg without producing output
+        sanity = subprocess.run([
+            "ffmpeg", "-v", "error", "-nostdin", "-i", tmp_path, "-f", "null", "-"
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if sanity.returncode != 0:
+            err = sanity.stderr.decode("utf-8", errors="ignore")
+            # Graceful skip for partial, short, or fragmented chunks
+            low = err.lower()
+            if any(k in low for k in ["end of file", "ebml header parsing failed", "invalid data found", "moov atom not found"]):
+                try: os.remove(tmp_path)
+                except: pass
+                return JSONResponse(status_code=204, content={"skip": err[:200]})
+            os.remove(tmp_path)
+            return JSONResponse(status_code=HTTP_400_BAD_REQUEST,
+                                content={"error": "decode_failed", "detail": err[:400]})
+
+        # Transcode to WAV for consistent processing
+        wav_tmp = tempfile.mktemp(suffix=".wav")
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-y", "-i", tmp_path, "-ac", "1", "-ar", "16000", "-f", "wav", wav_tmp
+        ]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0 or not os.path.exists(wav_tmp) or os.path.getsize(wav_tmp) == 0:
+            err = proc.stderr.decode("utf-8", errors="ignore")
+            print("[ffmpeg] transcode error:", err[:800])
+            os.remove(tmp_path)  # Clean up original file
             try:
-                transcribed_text = app.transcription_queue.get(timeout=1)
-                log.info(f"Detected: '{transcribed_text}'")
-                
-                # Update last match info
-                last_match_info["spoken_text"] = transcribed_text
-                
-                if time.time() - app.last_match_time < app.MATCH_COOLDOWN:
-                    continue
-                
-                from rapidfuzz import process, fuzz
-                match, score, idx = process.extractOne(
-                    transcribed_text, app.cue_texts, scorer=fuzz.partial_ratio
-                )
-                log.info(f"Fuzzy match '{match}' (score {score})")
-                
-                last_match_info["score"] = score
-                
-                if score >= app.MATCH_THRESHOLD_SCORE:
-                    cue = app.script_cues[idx]
-                    app.current_cue_index = idx
-                    last_match_info["id"] = cue['id']
-                    log.info(f"Match! Cue {cue['id']} → {cue['en_audio']}")
-                    app.playback_queue.put(os.path.join(app.AUDIO_DIR, cue['en_audio'].split('/')[-1]))
-                    app.last_match_time = time.time()
-                    app.last_played_cue_id = cue['id']
-            except queue.Empty:
-                continue
-            except Exception as e:
-                log.error(f"Enhanced main logic error: {e}")
-    
-    # Replace the main logic function
-    app.main_logic = enhanced_main_logic
+                os.remove(wav_tmp)  # Try to remove partially created wav file
+            except:
+                pass
+            return JSONResponse(status_code=422, content={"error": "ffmpeg_failed", "detail": err[:400]})
 
-# --- Modified Audio Recorder ---
-def setup_frontend_audio_recorder():
-    """Setup audio recorder that can be disabled when in frontend mode."""
-    original_audio_recorder = app.audio_recorder
-    
-    def frontend_aware_audio_recorder():
-        log.info("Starting frontend-aware audio recording...")
+        # now it's complete AND valid → safe to process
         try:
-            import sounddevice as sd
-            # Test if audio device is available
+            result = app_api.process_audio(wav_tmp)   # Pass the transcoded WAV file
+        finally:
+            # remove only the original upload; let the app delete the WAV after use
             try:
-                sd.check_input_settings(samplerate=app.SAMPLE_RATE, channels=1, dtype='float32')
-            except Exception as device_error:
-                log.warning(f"Audio device not available: {device_error}")
-                log.info("Audio recording disabled - will rely on frontend audio ingest only")
-                while True:
-                    time.sleep(1)  # Keep thread alive but don't try to record
-                return
-                
-            with sd.InputStream(samplerate=app.SAMPLE_RATE, channels=1, dtype='float32', blocksize=app.CHUNK_SIZE) as stream:
-                while True:
-                    if app.is_playing or is_frontend_mode:
-                        time.sleep(0.1)
-                        continue
-                    audio_chunk, overflowed = stream.read(app.CHUNK_SIZE)
-                    if overflowed:
-                        log.warning("Audio input buffer overflowed!")
-                    app.audio_queue.put(audio_chunk.flatten())
-        except Exception as e:
-            log.error(f"Audio recording error: {e}")
-            log.info("Continuing without local audio recording - frontend audio ingest will still work")
-            while True:
-                time.sleep(1)  # Keep thread alive
-    
-    app.audio_recorder = frontend_aware_audio_recorder
+                os.remove(tmp_path)
+            except:
+                pass
+            # Do NOT remove wav_tmp here; it is used asynchronously by the app
 
-# --- Startup ---
-def start_api_server():
-    """Start the API server and background threads."""
-    log.info("Starting TTS Remote API server...")
-    
-    # Load script cues
-    app.load_script_cues()
-    
-    # Setup enhanced monitoring
-    monitor_transcriptions()
-    setup_frontend_audio_recorder()
-    
-    # Start the original app threads
-    threading.Thread(target=app.audio_recorder, daemon=True).start()
-    threading.Thread(target=app.transcriber, daemon=True).start()
-    threading.Thread(target=app.audio_playback, daemon=True).start()
-    threading.Thread(target=app.main_logic, daemon=True).start()
-    
-    # Start our command processor
-    threading.Thread(target=command_processor, daemon=True).start()
-    
-    log.info(f"API server starting on {BIND_HOST}:{BIND_PORT}")
-    log.info(f"CORS origins: {CORS_ORIGINS}")
-    log.info(f"Authentication: {'Enabled' if API_TOKEN else 'Disabled'}")
-    
-    # Start the FastAPI server
-    uvicorn.run(app_api, host=BIND_HOST, port=BIND_PORT, log_level="info")
+        return result
+    except Exception as e:
+        return JSONResponse(status_code=HTTP_500_INTERNAL_SERVER_ERROR, content={"error": str(e)})
 
 if __name__ == "__main__":
-    start_api_server()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
